@@ -67,7 +67,7 @@ def fetch(start_dt, end_dt, station="LTAN", wmo_id=None):
         data = []
         for l in lines:
             l = l.strip()
-            if l and (l[0].isdigit() or l.startswith(("METAR", "TAF", "SPECI"))):
+            if l and not l.startswith("#"):
                 data.append(l)
             
         # --- SYNOP VERİLERİ (Eksik Kısım Eklendi) ---
@@ -82,7 +82,7 @@ def fetch(start_dt, end_dt, station="LTAN", wmo_id=None):
                 if r2.ok:
                     for line in r2.text.splitlines():
                         line = line.strip()
-                        if line and not line.startswith("#") and ("AAXX" in line or str(wmo_id) in line):
+                        if line and not line.startswith("#"):
                             data.append(line)
             except Exception as e:
                 print(f"Ogimet SYNOP çekme hatası: {e}")

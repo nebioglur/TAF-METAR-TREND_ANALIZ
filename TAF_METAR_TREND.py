@@ -15,6 +15,21 @@ class HavacilikRobotModulu:
         self.esikler_vv = [100, 200, 500, 1000]
         self.kritik_hadiseler = [r'TS', r'FZ', r'SQ', r'FC', r'FG', r'SS', r'DS', r'(?<!-)RA', r'(?<!-)SN', r'GR']
 
+    def _resolve_dt(self, day, hour, minute, ref_date):
+        """DDHHMM formatındaki zamanı referans tarihe göre datetime objesine çevirir."""
+        candidates = []
+        for offset in [-1, 0, 1]:
+            y, m = ref_date.year, ref_date.month + offset
+            if m < 1: m += 12; y -= 1
+            elif m > 12: m -= 12; y += 1
+            try:
+                base = datetime(y, m, 1)
+                dt = base + timedelta(days=day-1, hours=hour, minutes=minute)
+                candidates.append(dt)
+            except: continue
+        if not candidates: return None
+        return min(candidates, key=lambda x: abs(x - ref_date))
+
     def zaman_uygun_mu(self, taf_header, metar_time_code, ref_date=None):
         """
         TAF geçerlilik aralığı ile METAR saatini kıyaslar.
@@ -326,13 +341,41 @@ class HavacilikRobotModulu:
         
         # --- COMPARE TAF vs METAR ---
         errors = self._compare_values(taf_vals, metar_vals)
+        taf_trends = self._parse_all_taf_trends(taf_body)
         
         if not errors:
+            # METAR, TAF'ın ana periyodu (Eski Durum) ile uyumlu.
+            # Ancak BECMG bitişine yaklaşıldıysa ve değişim henüz olmadıysa (METAR hala eski),
+            # METAR Trend'inde BECMG verilmesi beklenir.
+            if metar_time_match:
+                try:
+                    m_d = int(metar_time_match.group(0)[0:2])
+                    m_h = int(metar_time_match.group(0)[2:4])
+                    m_m = int(metar_time_match.group(0)[4:6])
+                    m_dt = self._resolve_dt(m_d, m_h, m_m, ref_date)
+                    
+                    if m_dt:
+                        for tr in taf_trends:
+                            if tr['type'] == 'BECMG' and tr['time']:
+                                tm = re.match(r'(\d{2})(\d{2})/(\d{2})(\d{2})', tr['time'])
+                                if tm:
+                                    te_d, te_h = int(tm.group(3)), int(tm.group(4))
+                                    t_end = self._resolve_dt(te_d, te_h, 0, m_dt)
+                                    
+                                    if t_end:
+                                        diff = (t_end - m_dt).total_seconds() / 60
+                                        # Son 60 dakika içindeyiz
+                                        if 0 < diff <= 60:
+                                            if not (trend_raw and "BECMG" in trend_raw):
+                                                eff_wind = tr['wind'] if tr['wind'] is not None else t_wind
+                                                eff_vis = tr['vis'] if tr['vis'] is not None else t_vis
+                                                eff_cig = tr['cig'] if tr['cig'] is not None else t_cig
+                                                if self._compare_values((eff_wind, eff_vis, eff_cig), metar_vals):
+                                                    return 50, "DİKKAT", [f"BECMG bitişine {int(diff)}dk kaldı. Değişim gerçekleşmedi ve Trend verilmedi."]
+                except: pass
             return 100, "UYUMLU", []
         
         # --- TAF İÇİNDEKİ TRENDLERİ (BECMG/TEMPO) KONTROL ET ---
-        # Eğer ana TAF ile uyuşmazlık varsa, belki TAF içindeki bir BECMG/TEMPO ile uyumludur.
-        taf_trends = self._parse_all_taf_trends(taf_body)
         for tr in taf_trends:
             # Zaman kontrolü
             if tr['time'] and metar_time_match:

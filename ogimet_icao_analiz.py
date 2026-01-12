@@ -101,6 +101,7 @@ def process_data(lines, station_code, wmo_id):
             elif len(parts) > 1 and len(parts[0]) == 4 and parts[0].isalpha() and parts[1].endswith('Z'):
                 turu = "TAF" if ("TAF" in line or "/" in line) else "METAR"
                 content = line
+                content = " ".join(parts)
                 m = re.search(r'\b(\d{2})(\d{2})(\d{2})Z\b', content)
                 if m:
                     try:
@@ -123,6 +124,7 @@ def process_data(lines, station_code, wmo_id):
     
     df = pd.DataFrame(data)
     if not df.empty:
+        df = df[df["date"] != "---"]
         df = df.drop_duplicates(subset=['Türü', 'Bülten'])
         df = df.sort_values(by="_dt", ascending=False)
     return df
@@ -146,7 +148,7 @@ class App(tk.Tk):
     def setup_ui(self):
         style = ttk.Style()
         style.theme_use('clam')
-        style.configure("Treeview", background="#263238", foreground="#eceff1", fieldbackground="#263238", rowheight=30, font=("Segoe UI", 10))
+        style.configure("Treeview", background="#263238", foreground="#eceff1", fieldbackground="#263238", rowheight=45, font=("Segoe UI", 10))
         style.configure("Treeview.Heading", background="#37474f", foreground="white", font=("Segoe UI", 11, "bold"))
         style.map("Treeview", background=[('selected', '#00bcd4')])
 
@@ -172,7 +174,7 @@ class App(tk.Tk):
         self.ent_end.set_date(now)
         self.ent_end.pack(side="left", padx=5)
         
-        tk.Button(top_frame, text="yieldİ ÇEK & ANALİZ ET", command=self.start_process, 
+        tk.Button(top_frame, text="VERİ ÇEK & ANALİZ ET", command=self.start_process, 
                   bg="#0078D7", fg="white", font=("Segoe UI", 10, "bold"), relief="flat").pack(side="left", padx=10)
         
         tk.Button(top_frame, text="EXCEL RAPOR", command=self.export_to_excel, 
@@ -199,10 +201,14 @@ class App(tk.Tk):
         self.lbl_status = tk.Label(top_frame, text="Hazır", bg="#2b2b2b", fg="#aaaaaa")
         self.lbl_status.pack(side="left", padx=10)
 
+        # Treeview Frame (Tablo ve Kaydırma Çubukları için Konteyner)
+        tree_frame = tk.Frame(self, bg="#2b2b2b")
+        tree_frame.pack(fill="both", expand=True, padx=10, pady=10)
+
         # Treeview
         cols = ("date", "Türü", "İstasyon", "Uyum", "Bülten")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings")
-        self.tree.heading("date", text="date")
+        self.tree = ttk.Treeview(tree_frame, columns=cols, show="headings")
+        self.tree.heading("date", text="Tarih")
         self.tree.heading("Türü", text="Türü")
         self.tree.heading("İstasyon", text="İstasyon")
         self.tree.heading("Uyum", text="TREND UYUM")
@@ -214,10 +220,13 @@ class App(tk.Tk):
         self.tree.column("Uyum", width=200, anchor="center")
         self.tree.column("Bülten", width=800, anchor="w")
         
-        sb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.tree.pack(fill="both", expand=True, padx=10, pady=10)
+        sb_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        sb_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=sb_y.set, xscrollcommand=sb_x.set)
+        
+        sb_y.pack(side="right", fill="y")
+        sb_x.pack(side="bottom", fill="x")
+        self.tree.pack(fill="both", expand=True)
         
         self.tree.tag_configure('UYUMSUZ', background='#D32F2F', foreground='white')
         self.tree.tag_configure('DIKKAT', background='#FFD700', foreground='black')
@@ -225,9 +234,10 @@ class App(tk.Tk):
         self.tree.tag_configure('SİNOPTİK', foreground='#FFB74D')
         self.tree.tag_configure('METAR', foreground='#4FC3F7')
         self.tree.tag_configure('TAF', background='#3E2723', foreground='#FFAB00', font=("Verdana", 10, "bold"))
+        self.tree.tag_configure('oddrow', background='#303f46')
 
         # Detay Paneli
-        self.detail_text = tk.Text(self, height=8, bg="#1e1e1e", fg="white", font=("Consolas", 11))
+        self.detail_text = tk.Text(self, height=8, bg="#1e1e1e", fg="white", font=("Consolas", 11), wrap="word")
         self.detail_text.pack(fill="x", padx=10, pady=10)
         
         self.detail_text.tag_config("header", foreground="#aaaaaa", font=("Segoe UI", 10, "bold"))
@@ -235,6 +245,9 @@ class App(tk.Tk):
         self.detail_text.tag_config("red", foreground="#FF5252")
         self.detail_text.tag_config("yellow", foreground="#FFD700")
         self.detail_text.tag_config("green", foreground="#69F0AE")
+        self.detail_text.tag_config("metar_color", foreground="#4FC3F7")
+        self.detail_text.tag_config("metar_color", foreground="#4FC3F7")
+        self.detail_text.tag_config("taf_style", foreground="#FFAB00", font=("Consolas", 11, "bold"))
         
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Motion>", self.on_tree_motion)
@@ -360,20 +373,15 @@ class App(tk.Tk):
                                         best_change_start = -1
                                         taf_dt = target_row['_dt']
 
-                                        # Tüm değişim gruplarını (FM, BECMG, TEMPO) yakalayan birleşik regex
-                                        change_pattern = r'\b(FM(\d{6})|(?:BECMG|TEMPO)\s+((\d{4})/\d{4}))\b'
+                                        # Sadece FM grupları ana TAF'ı sıfırlar. BECMG/TEMPO trend olarak işlenir.
+                                        change_pattern = r'\bFM(\d{6})\b'
                                         
                                         for m in re.finditer(change_pattern, last_taf):
                                             start_dt = None
                                             try:
-                                                if m.group(2): # FM grubu matchti (örn: FM081000)
-                                                    time_code = m.group(2)
-                                                    day, hour, minute = int(time_code[0:2]), int(time_code[2:4]), int(time_code[4:6])
-                                                    start_dt = taf_dt.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
-                                                elif m.group(3): # BECMG/TEMPO grubu matchti (örn: BECMG 0810/0812)
-                                                    time_code = m.group(4) # Sadece başlangıç DDHH alınır (örn: 0810)
-                                                    day, hour = int(time_code[0:2]), int(time_code[2:4])
-                                                    start_dt = taf_dt.replace(day=day, hour=hour, minute=0, second=0, microsecond=0)
+                                                time_code = m.group(1)
+                                                day, hour, minute = int(time_code[0:2]), int(time_code[2:4]), int(time_code[4:6])
+                                                start_dt = taf_dt.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
                                                 
                                                 if start_dt:
                                                     # Ay passişi kontrolü
@@ -504,7 +512,7 @@ class App(tk.Tk):
     def render_tree(self, df):
         self.tree_tooltips.clear()
         self.tree.delete(*self.tree.get_children())
-        for _, row in df.iterrows():
+        for i, (_, row) in enumerate(df.iterrows()):
             vals = (row["date"], row["Türü"], row["İstasyon"], row["_uyum"], row["Bülten"])
             tag = ""
             if "UYUMSUZ" in row["_uyum"]: tag = "UYUMSUZ"
@@ -514,7 +522,11 @@ class App(tk.Tk):
             elif row["Türü"] == "TAF": tag = "TAF"
             elif row["Türü"] in ["METAR", "SPECI"]: tag = "METAR"
             
-            item_id = self.tree.insert("", "end", values=vals, tags=(tag,))
+            row_tags = []
+            if i % 2 == 1: row_tags.append('oddrow')
+            if tag: row_tags.append(tag)
+            
+            item_id = self.tree.insert("", "end", values=vals, tags=tuple(row_tags))
             
             if row["_detay"]:
                 color = "#eceff1"
@@ -549,7 +561,10 @@ class App(tk.Tk):
         frame.pack(fill="both", expand=True)
         
         # Renkli text for Text widget kullanımı
-        txt_widget = tk.Text(frame, width=90, height=len(text.split('\n')) + 4, bg=bg_color, fg=fg_color, font=("Consolas", 10), relief="flat", wrap="word")
+        lines = text.split('\n')
+        w = min(max([len(line) for line in lines] + [40]), 90) + 2
+        h = len(lines) + 2
+        txt_widget = tk.Text(frame, width=w, height=h, bg=bg_color, fg=fg_color, font=("Consolas", 10), relief="flat", wrap="word")
         txt_widget.pack(padx=10, pady=8)
         
         txt_widget.tag_config("green", foreground="#00E676")
@@ -647,26 +662,27 @@ class App(tk.Tk):
                 "Bülten": "Bülten"
             }
             
-            for col_id in self.tree["columns"]:
+            # Sabit sütunları içeriğe göre ayarla (Bülten hariç)
+            for col_id in ["date", "Türü", "İstasyon", "Uyum"]:
                 df_col = col_map.get(col_id)
                 heading_text = self.tree.heading(col_id, "text")
                 max_w = header_font.measure(heading_text) + 25
                 
                 if df_col and df_col in df.columns:
                     vals = df[df_col].fillna("").astype(str).unique()
-                    if len(vals) > 50: vals = sorted(vals, key=len, reverse=True)[:50]
+                    if len(vals) > 20: vals = sorted(vals, key=len, reverse=True)[:20]
                     for v in vals:
                         w = font.measure(v) + 20
                         if w > max_w: max_w = w
                 
-                if col_id == "Bülten": 
-                    max_w = min(max_w, 1200)
-                    max_w = max(max_w, 400)
-                
                 if col_id == "Uyum":
                     max_w = max(max_w, 150)
                 
-                self.tree.column(col_id, width=max_w)
+                self.tree.column(col_id, width=max_w, stretch=False)
+            
+            # Bülten sütunu kalan alanı doldursun
+            self.tree.column("Bülten", width=600, stretch=True)
+            
         except Exception as e: print(f"Resize error: {e}")
 
     def on_select(self, event):
@@ -690,23 +706,38 @@ class App(tk.Tk):
                 self.detail_text.delete("1.0", tk.END)
                 
                 # METAR
-                self.detail_text.insert(tk.END, f"METAR:\n{bulten}\n", "content")
+                self.detail_text.insert(tk.END, "METAR:\n", "header")
+                self.detail_text.insert(tk.END, f"{bulten}\n", "metar_color")
                 
                 # TAF
                 if ref_taf:
-                    self.detail_text.insert(tk.END, f"\nİLGİLİ TAF:\n{ref_taf}\n", "content")
+                    self.detail_text.insert(tk.END, f"\nİLGİLİ TAF:\n{ref_taf}\n", "taf_style")
                 
                 # ANALİZ
+
                 if detay:
+
+                    if row_data['Türü'] == 'TAF': self.detail_text.insert(tk.END, f"{bulten}\n", ("content", "taf_font"))
+                    else: self.detail_text.insert(tk.END, f"{bulten}\n", "content")
+
+
                     self.detail_text.insert(tk.END, "\nANALİZ DETAYI:\n", "header")
+
+                    reason_tag = "content"
+                    uyum_durumu = row_data.get('_uyum', '')
+                    if "UYUMSUZ" in uyum_durumu: reason_tag = "red"
+                    elif "DİKKAT" in uyum_durumu: reason_tag = "yellow"
+
                     for line in detay.split('\n'):
                         tag = "default"
                         if "✅" in line or "UYUMLU" in line: tag = "green"
                         elif "❌" in line or "UYUMSUZ" in line: tag = "red"
                         elif "⚠️" in line or "DİKKAT" in line: tag = "yellow"
+                        elif line.strip().startswith("•"): tag = reason_tag
                         self.detail_text.insert(tk.END, f"{line}\n", tag)
                 
                 self.detail_text.config(state="disabled")
+
 
     def export_to_excel(self):
         if self.full_df is None or self.full_df.empty:
@@ -744,7 +775,17 @@ class App(tk.Tk):
                             uyumsuz_df = pd.concat([uyumsuz_df, split_data], axis=1)
                         
                         uyumsuz_df.to_excel(writer, sheet_name='Uyumsuzluklar', index=False)
-                        
+                
+                # Metin Kaydırma (Wrap Text) - Tüm Sayfalar İçin
+                try:
+                    from openpyxl.styles import Alignment
+                    for sheet_name in writer.sheets:
+                        ws = writer.sheets[sheet_name]
+                        for row in ws.iter_rows():
+                            for cell in row:
+                                cell.alignment = Alignment(wrap_text=True, vertical='top')
+                except Exception as e: print(f"Excel stil hatası: {e}")
+
             messagebox.showinfo("Başarılı", f"Rapor kaydedildi:\n{file_path}")
         except Exception as e:
             messagebox.showerror("Exception", f"Dışa aktarma hatası: {e}")
