@@ -331,4 +331,3 @@ if st.session_state.analiz_sonucu is not None:
                 st.markdown(f"**{row['date']} - {row['Bülten']}**")
                 st.info(row["_detay"])
                 st.divider()
-
