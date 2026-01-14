@@ -31,6 +31,10 @@ def process_data(lines, station_code, wmo_id):
         line = line.strip()
         if not line: continue
         
+        # Ogimet HTML kalıntılarını temizle (TAF sonuna yapışan HTML tagleri)
+        if "=" in line and "<" in line:
+            line = re.sub(r'=\s*<.*$', '=', line)
+        
         parts = line.split()
         is_start = False
         
@@ -101,7 +105,6 @@ def process_data(lines, station_code, wmo_id):
             elif len(parts) > 1 and len(parts[0]) == 4 and parts[0].isalpha() and parts[1].endswith('Z'):
                 turu = "TAF" if ("TAF" in line or "/" in line) else "METAR"
                 content = line
-                content = " ".join(parts)
                 m = re.search(r'\b(\d{2})(\d{2})(\d{2})Z\b', content)
                 if m:
                     try:
@@ -218,7 +221,7 @@ class App(tk.Tk):
         self.tree.column("Türü", width=50, anchor="center")
         self.tree.column("İstasyon", width=60, anchor="center")
         self.tree.column("Uyum", width=200, anchor="center")
-        self.tree.column("Bülten", width=800, anchor="w")
+        self.tree.column("Bülten", width=900, anchor="w")
         
         sb_y = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
         sb_x = ttk.Scrollbar(tree_frame, orient="horizontal", command=self.tree.xview)
@@ -246,8 +249,9 @@ class App(tk.Tk):
         self.detail_text.tag_config("yellow", foreground="#FFD700")
         self.detail_text.tag_config("green", foreground="#69F0AE")
         self.detail_text.tag_config("metar_color", foreground="#4FC3F7")
-        self.detail_text.tag_config("metar_color", foreground="#4FC3F7")
         self.detail_text.tag_config("taf_style", foreground="#FFAB00", font=("Consolas", 11, "bold"))
+        self.detail_text.tag_config("default", foreground="white")
+        self.detail_text.tag_config("highlight", background="#FFEB3B", foreground="black")
         
         self.tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tree.bind("<Motion>", self.on_tree_motion)
@@ -374,14 +378,15 @@ class App(tk.Tk):
                                         taf_dt = target_row['_dt']
 
                                         # Sadece FM grupları ana TAF'ı sıfırlar. BECMG/TEMPO trend olarak işlenir.
-                                        change_pattern = r'\bFM(\d{6})\b'
+                                        change_pattern = r'\bFM(?P<fm>\d{6})\b'
                                         
                                         for m in re.finditer(change_pattern, last_taf):
                                             start_dt = None
                                             try:
-                                                time_code = m.group(1)
-                                                day, hour, minute = int(time_code[0:2]), int(time_code[2:4]), int(time_code[4:6])
-                                                start_dt = taf_dt.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
+                                                if m.group('fm'):
+                                                    time_code = m.group('fm')
+                                                    day, hour, minute = int(time_code[0:2]), int(time_code[2:4]), int(time_code[4:6])
+                                                    start_dt = taf_dt.replace(day=day, hour=hour, minute=minute, second=0, microsecond=0)
                                                 
                                                 if start_dt:
                                                     # Ay passişi kontrolü
@@ -614,41 +619,95 @@ class App(tk.Tk):
             row = self.full_df[(self.full_df['date'] == date) & (self.full_df['Bülten'] == bulten)]
             if not row.empty:
                 row = row.iloc[0]
-                if row['Türü'] not in ['METAR', 'SPECI']:
-                    return
 
                 ref_taf = row.get('_ref_taf', '')
                 detay = row.get('_detay', '')
                 
                 top = tk.Toplevel(self)
                 top.title(f"Detaylı Analiz: {date}")
-                top.geometry("1100x600")
+                top.geometry("900x700")
                 top.configure(bg="#2b2b2b")
                 
                 tk.Label(top, text=f"METAR - TAF KARŞILAŞTIRMASI ({STATION})", font=("Segoe UI", 12, "bold"), bg="#2b2b2b", fg="white").pack(pady=10)
                 
-                # Yan Yana Görünüm for PanedWindow
-                paned = tk.PanedWindow(top, orient=tk.HORIZONTAL, bg="#2b2b2b", sashwidth=5)
-                paned.pack(fill="both", expand=True, padx=10, pady=5)
+                # Kopyala Butonu Alanı
+                btn_frame = tk.Frame(top, bg="#2b2b2b")
+                btn_frame.pack(fill="x", padx=10)
                 
-                # SOL: METAR and Analiz Sonucu
-                f_metar = tk.LabelFrame(paned, text="METAR / SPECI & ANALİZ", bg="#2b2b2b", fg="#4FC3F7", font=("Segoe UI", 10, "bold"))
-                paned.add(f_metar, minsize=500)
+                # Tek Bölümde Birleşik Görünüm
+                main_frame = tk.Frame(top, bg="#2b2b2b")
+                main_frame.pack(fill="both", expand=True, padx=10, pady=5)
                 
-                txt_metar = tk.Text(f_metar, bg="#1e1e1e", fg="white", font=("Consolas", 11), relief="flat", wrap="word", padx=10, pady=10)
-                txt_metar.pack(fill="both", expand=True)
-                txt_metar.insert("1.0", bulten + "\n\n" + "-"*40 + "\n" + detay)
-                txt_metar.config(state="disabled")
+                txt_display = tk.Text(main_frame, bg="#1e1e1e", fg="white", font=("Consolas", 11), relief="flat", wrap="word", padx=10, pady=10)
+                sb = ttk.Scrollbar(main_frame, orient="vertical", command=txt_display.yview)
+                txt_display.configure(yscrollcommand=sb.set)
                 
-                # SAĞ: Referans TAF
-                f_taf = tk.LabelFrame(paned, text="REFERANS TAF", bg="#2b2b2b", fg="#E64A19", font=("Segoe UI", 10, "bold"))
-                paned.add(f_taf, minsize=500)
+                sb.pack(side="right", fill="y")
+                txt_display.pack(side="left", fill="both", expand=True)
                 
-                taf_text = ref_taf if ref_taf else "Uygun TAF bulunamadı."
-                txt_taf = tk.Text(f_taf, bg="#1e1e1e", fg="#E64A19" if ref_taf else "#FF5252", font=("Consolas", 11, "bold"), relief="flat", wrap="word", padx=10, pady=10)
-                txt_taf.pack(fill="both", expand=True)
-                txt_taf.insert("1.0", taf_text)
-                txt_taf.config(state="disabled")
+                def copy_content():
+                    try:
+                        content = txt_display.get("1.0", tk.END)
+                        self.clipboard_clear()
+                        self.clipboard_append(content)
+                        messagebox.showinfo("Bilgi", "İçerik panoya kopyalandı.")
+                    except: pass
+                
+                tk.Button(btn_frame, text="📋 Metni Kopyala", command=copy_content, 
+                          bg="#0078D7", fg="white", font=("Segoe UI", 9, "bold")).pack(side="right")
+                
+                # Tag configurations
+                txt_display.tag_config("header", foreground="#aaaaaa", font=("Segoe UI", 10, "bold"))
+                txt_display.tag_config("metar", foreground="#4FC3F7", font=("Consolas", 11, "bold"))
+                txt_display.tag_config("taf", foreground="#E64A19", font=("Consolas", 11, "bold"))
+                txt_display.tag_config("green", foreground="#69F0AE")
+                txt_display.tag_config("red", foreground="#FF5252")
+                txt_display.tag_config("yellow", foreground="#FFD700")
+                txt_display.tag_config("default", foreground="#eceff1")
+                txt_display.tag_config("highlight", background="#FFEB3B", foreground="black")
+                
+                # İçerik Ekleme
+                if row['Türü'] == 'TAF':
+                    txt_display.insert("end", "SEÇİLEN TAF:\n", "header")
+                    txt_display.insert("end", f"{bulten}\n\n", "taf")
+                else:
+                    txt_display.insert("end", "METAR / SPECI:\n", "header")
+                    txt_display.insert("end", f"{bulten}\n\n", "metar")
+                    
+                    txt_display.insert("end", "REFERANS TAF:\n", "header")
+                    taf_text = ref_taf if ref_taf else "Uygun TAF bulunamadı."
+                    txt_display.insert("end", f"{taf_text}\n\n", "taf")
+                    
+                    txt_display.insert("end", "-"*60 + "\n", "header")
+                    txt_display.insert("end", "ANALİZ DETAYI:\n", "header")
+                    
+                    for line in detay.split('\n'):
+                        tag = "default"
+                        if "✅" in line or "UYUMLU" in line: tag = "green"
+                        elif "❌" in line or "UYUMSUZ" in line: tag = "red"
+                        elif "⚠️" in line or "DİKKAT" in line: tag = "yellow"
+                        txt_display.insert("end", f"{line}\n", tag)
+                        
+                        # Değer Vurgulama Mantığı (Highlight)
+                        if "Beklenen:" in line and "METAR:" in line:
+                            try:
+                                m = re.search(r'Beklenen:(.*?) vs METAR:(.*?)\)', line)
+                                if m:
+                                    vals = [m.group(1).strip(), m.group(2).strip()]
+                                    for v in vals:
+                                        if v.endswith('m') and v[:-1].isdigit(): v = v[:-1]
+                                        if not v: continue
+                                        
+                                        start = "1.0"
+                                        while True:
+                                            pos = txt_display.search(v, start, stopindex=tk.END)
+                                            if not pos: break
+                                            end = f"{pos}+{len(v)}c"
+                                            txt_display.tag_add("highlight", pos, end)
+                                            start = end
+                            except: pass
+                
+                txt_display.config(state="disabled")
     def adjust_column_widths(self, df):
         try:
             font = tkfont.Font(family="Segoe UI", size=10)
@@ -659,7 +718,7 @@ class App(tk.Tk):
                 "Türü": "Türü",
                 "İstasyon": "İstasyon",
                 "Uyum": "_uyum",
-                "Bülten": "Bülten"
+                # "Bülten": "Bülten"
             }
             
             # Sabit sütunları içeriğe göre ayarla (Bülten hariç)
@@ -680,8 +739,8 @@ class App(tk.Tk):
                 
                 self.tree.column(col_id, width=max_w, stretch=False)
             
-            # Bülten sütunu kalan alanı doldursun
-            self.tree.column("Bülten", width=600, stretch=True)
+            # Bülten sütunu sabit genişlik
+            self.tree.column("Bülten", width=900, stretch=False)
             
         except Exception as e: print(f"Resize error: {e}")
 
@@ -705,22 +764,20 @@ class App(tk.Tk):
                 self.detail_text.config(state="normal")
                 self.detail_text.delete("1.0", tk.END)
                 
-                # METAR
-                self.detail_text.insert(tk.END, "METAR:\n", "header")
-                self.detail_text.insert(tk.END, f"{bulten}\n", "metar_color")
+                # Bülten Tipi Kontrolü
+                if row_data['Türü'] == 'TAF':
+                    self.detail_text.insert(tk.END, "TAF:\n", "header")
+                    self.detail_text.insert(tk.END, f"{bulten}\n", "taf_style")
+                else:
+                    self.detail_text.insert(tk.END, "METAR / SPECI:\n", "header")
+                    self.detail_text.insert(tk.END, f"{bulten}\n", "metar_color")
                 
                 # TAF
                 if ref_taf:
                     self.detail_text.insert(tk.END, f"\nİLGİLİ TAF:\n{ref_taf}\n", "taf_style")
                 
                 # ANALİZ
-
                 if detay:
-
-                    if row_data['Türü'] == 'TAF': self.detail_text.insert(tk.END, f"{bulten}\n", ("content", "taf_font"))
-                    else: self.detail_text.insert(tk.END, f"{bulten}\n", "content")
-
-
                     self.detail_text.insert(tk.END, "\nANALİZ DETAYI:\n", "header")
 
                     reason_tag = "content"
@@ -735,6 +792,25 @@ class App(tk.Tk):
                         elif "⚠️" in line or "DİKKAT" in line: tag = "yellow"
                         elif line.strip().startswith("•"): tag = reason_tag
                         self.detail_text.insert(tk.END, f"{line}\n", tag)
+                        
+                        # Değer Vurgulama Mantığı (Highlight)
+                        if "Beklenen:" in line and "METAR:" in line:
+                            try:
+                                m = re.search(r'Beklenen:(.*?) vs METAR:(.*?)\)', line)
+                                if m:
+                                    vals = [m.group(1).strip(), m.group(2).strip()]
+                                    for v in vals:
+                                        if v.endswith('m') and v[:-1].isdigit(): v = v[:-1]
+                                        if not v: continue
+                                        
+                                        start = "1.0"
+                                        while True:
+                                            pos = self.detail_text.search(v, start, stopindex=tk.END)
+                                            if not pos: break
+                                            end = f"{pos}+{len(v)}c"
+                                            self.detail_text.tag_add("highlight", pos, end)
+                                            start = end
+                            except: pass
                 
                 self.detail_text.config(state="disabled")
 
@@ -778,9 +854,28 @@ class App(tk.Tk):
                 
                 # Metin Kaydırma (Wrap Text) - Tüm Sayfalar İçin
                 try:
-                    from openpyxl.styles import Alignment
+                    from openpyxl.styles import Alignment, Font
+                    from openpyxl.utils import get_column_letter
+                    
                     for sheet_name in writer.sheets:
                         ws = writer.sheets[sheet_name]
+                        
+                        # Başlıkları Kalın Yap
+                        for cell in ws[1]:
+                            cell.font = Font(bold=True)
+                        
+                        # Sütun Genişliklerini Ayarla (Wrap Text için kritik)
+                        for i, col in enumerate(ws.columns, 1):
+                            col_letter = get_column_letter(i)
+                            header = str(col[0].value)
+                            
+                            if "Bülten" in header or "Analiz" in header or "TAF" in header:
+                                ws.column_dimensions[col_letter].width = 60 # Genişlik sabit, metin aşağı kayar
+                            elif "Tarih" in header or "date" in header:
+                                ws.column_dimensions[col_letter].width = 18
+                            else:
+                                ws.column_dimensions[col_letter].width = 14
+                        
                         for row in ws.iter_rows():
                             for cell in row:
                                 cell.alignment = Alignment(wrap_text=True, vertical='top')

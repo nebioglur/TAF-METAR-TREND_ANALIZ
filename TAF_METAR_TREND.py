@@ -13,7 +13,25 @@ class HavacilikRobotModulu:
         self.esikler_ruyet = [150, 350, 600, 800, 1500, 3000, 5000]
         self.esikler_tavan = [100, 200, 500, 1000, 1500]
         self.esikler_vv = [100, 200, 500, 1000]
-        self.kritik_hadiseler = [r'TS', r'FZ', r'SQ', r'FC', r'FG', r'SS', r'DS', r'(?<!-)RA', r'(?<!-)SN', r'GR']
+        self.kritik_hadiseler = [
+            r'(?:\b|(?<=VC))TS', 
+            r'\bFZ', 
+            r'\bSQ\b', 
+            r'\bFC\b', 
+            r'(?:\b|(?<=BC)|(?<=FZ)|(?<=MI)|(?<=PR)|(?<=VC))FG\b', 
+            r'(?:\b|(?<=VC))SS\b', 
+            r'(?:\b|(?<=VC))DS\b', 
+            r'(?:\b|(?<=SH)|(?<=TS)|(?<=FZ)|(?<=VC))(?<!-)(?<!RE)RA\b', 
+            r'(?:\b|(?<=SH)|(?<=TS)|(?<=FZ)|(?<=VC)|(?<=BL)|(?<=DR))(?<!-)(?<!RE)SN\b', 
+            r'(?:\b|(?<=SH)|(?<=TS)|(?<=VC))GR\b'
+        ]
+        
+        print("--- KRİTİK DEĞERLEME KISTASLARI ---")
+        print(f"Görüş Eşikleri (m): {self.esikler_ruyet}")
+        print(f"Tavan Eşikleri (ft): {self.esikler_tavan}")
+        print(f"Dikey Görüş Eşikleri (ft): {self.esikler_vv}")
+        print(f"Kritik Hadiseler (Regex): {self.kritik_hadiseler}")
+        print("-----------------------------------")
 
     def _resolve_dt(self, day, hour, minute, ref_date):
         """DDHHMM formatındaki zamanı referans tarihe göre datetime objesine çevirir."""
@@ -221,6 +239,20 @@ class HavacilikRobotModulu:
             
         return None
 
+    def _parse_weather(self, code):
+        """Metin içindeki kritik hava hadiselerini (Weather) ayıklar."""
+        if 'NSW' in code:
+            return set()
+            
+        found = set()
+        has_match = False
+        for pattern in self.kritik_hadiseler:
+            if re.search(pattern, code):
+                found.add(pattern)
+                has_match = True
+        
+        return found if has_match else None
+
     def _extract_body(self, text):
         """Rapor metnini rüzgar grubundan itibaren alır (Başlıkları ve zamanı atlar)."""
         # Rüzgar deseni: 3 hane yön (veya VRB) + 2/3 hane hız + (opsiyonel G + hamle) + KT
@@ -231,8 +263,8 @@ class HavacilikRobotModulu:
 
     def _compare_values(self, t_vals, m_vals):
         """TAF/Trend değerleri ile METAR değerlerini karşılaştırır ve hataları listeler."""
-        t_wind, t_vis, t_cig = t_vals
-        m_wind, m_vis, m_cig = m_vals
+        t_wind, t_vis, t_cig, t_wx = t_vals
+        m_wind, m_vis, m_cig, m_wx = m_vals
         errors = []
 
         # Rüzgar
@@ -265,6 +297,18 @@ class HavacilikRobotModulu:
                 label = "Dikey Görüş" if (t_is_vv or m_is_vv) else "Tavan"
                 errors.append(f"{label} değişimi limit dışı (Beklenen:{t_c_h} vs METAR:{m_c_h})")
                 break
+        
+        # Hadise (Weather)
+        # None ise (belirtilmemişse) boş küme kabul etme, karşılaştırma yapma (persist durumu dışarıda yönetilir)
+        # Ancak burada t_wx ve m_wx kesinleşmiş setler olarak gelir.
+        set_t = t_wx if t_wx is not None else set()
+        set_m = m_wx if m_wx is not None else set()
+        
+        # Farklılık var mı? (Sadece kritik hadiseler listesindekiler için)
+        diff = set_t.symmetric_difference(set_m)
+        if diff:
+            # Hangi hadiselerin değiştiğini bul (Regex patternleri yerine okunabilir kodlar döndürülebilir ama şimdilik pattern yeterli)
+            errors.append(f"Kritik hadise değişimi tespit edildi (Beklenen ile METAR farklı)")
                 
         return errors
 
@@ -289,7 +333,8 @@ class HavacilikRobotModulu:
             w = self._parse_wind(content)
             v = self._parse_visibility(content)
             c = self._parse_ceiling(content)
-            trends.append({'type': trend_type, 'time': time_str, 'wind': w, 'vis': v, 'cig': c})
+            wx = self._parse_weather(content)
+            trends.append({'type': trend_type, 'time': time_str, 'wind': w, 'vis': v, 'cig': c, 'wx': wx})
         return trends
 
     def analiz_et(self, taf_raw, metar_raw, trend_raw, taf_zaman="0412/0512", ref_date=None):
@@ -324,7 +369,10 @@ class HavacilikRobotModulu:
         m_cig = self._parse_ceiling(metar_body)
         if m_cig is None: m_cig = (9999, False)
         
-        metar_vals = (m_wind, m_vis, m_cig)
+        m_wx = self._parse_weather(metar_body)
+        if m_wx is None: m_wx = set() # METAR'da hadise yoksa boş set
+        
+        metar_vals = (m_wind, m_vis, m_cig, m_wx)
 
         # --- PARSE TAF ---
         t_wind = self._parse_wind(taf_body)
@@ -337,7 +385,10 @@ class HavacilikRobotModulu:
         t_cig = self._parse_ceiling(taf_body)
         if t_cig is None: t_cig = (9999, False)
         
-        taf_vals = (t_wind, t_vis, t_cig)
+        t_wx = self._parse_weather(taf_body)
+        if t_wx is None: t_wx = set() # TAF'ta hadise yoksa boş set
+        
+        taf_vals = (t_wind, t_vis, t_cig, t_wx)
         
         # --- COMPARE TAF vs METAR ---
         errors = self._compare_values(taf_vals, metar_vals)
@@ -370,7 +421,8 @@ class HavacilikRobotModulu:
                                                 eff_wind = tr['wind'] if tr['wind'] is not None else t_wind
                                                 eff_vis = tr['vis'] if tr['vis'] is not None else t_vis
                                                 eff_cig = tr['cig'] if tr['cig'] is not None else t_cig
-                                                if self._compare_values((eff_wind, eff_vis, eff_cig), metar_vals):
+                                                eff_wx = tr['wx'] if tr['wx'] is not None else t_wx
+                                                if self._compare_values((eff_wind, eff_vis, eff_cig, eff_wx), metar_vals):
                                                     return 50, "DİKKAT", [f"BECMG bitişine {int(diff)}dk kaldı. Değişim gerçekleşmedi ve Trend verilmedi."]
                 except: pass
             return 100, "UYUMLU", []
@@ -386,9 +438,10 @@ class HavacilikRobotModulu:
             eff_wind = tr['wind'] if tr['wind'] is not None else t_wind
             eff_vis = tr['vis'] if tr['vis'] is not None else t_vis
             eff_cig = tr['cig'] if tr['cig'] is not None else t_cig
+            eff_wx = tr['wx'] if tr['wx'] is not None else t_wx
             
             # Bu kombinasyonla tekrar karşılaştır
-            tr_errors = self._compare_values((eff_wind, eff_vis, eff_cig), metar_vals)
+            tr_errors = self._compare_values((eff_wind, eff_vis, eff_cig, eff_wx), metar_vals)
             if not tr_errors:
                 return 100, "UYUMLU (TAF Trend)", []
 
@@ -410,7 +463,10 @@ class HavacilikRobotModulu:
             c = self._parse_ceiling(trend_raw)
             mt_cig = c if c is not None else m_cig
             
-            metar_trend_vals = (mt_wind, mt_vis, mt_cig)
+            wx = self._parse_weather(trend_raw)
+            mt_wx = wx if wx is not None else m_wx
+            
+            metar_trend_vals = (mt_wind, mt_vis, mt_cig, mt_wx)
             
             # Compare TAF (Expected) vs METAR Trend (Forecasted Observation)
             trend_errors = self._compare_values(taf_vals, metar_trend_vals)
