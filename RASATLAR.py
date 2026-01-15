@@ -9,7 +9,7 @@ import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
 
-def fetch(start_dt, end_dt, station="LTAN", wmo_id=None):
+def fetch(start_dt, end_dt, station="LTAN", wmo_id=None, timeout=30):
     """
     Ogimet.com üzerinden tarih aralığına göre verileri çeker.
     """
@@ -42,7 +42,7 @@ def fetch(start_dt, end_dt, station="LTAN", wmo_id=None):
         "send": "send"
     }
     
-    print(f"Ogimet Veri İsteği -> İstasyon: {target} ({start_dt.strftime('%Y-%m-%d')} - {end_dt.strftime('%Y-%m-%d')})")
+    print(f"DEBUG: Ogimet İsteği Başlatılıyor -> {target} ({start_dt.strftime('%d.%m.%Y')} - {end_dt.strftime('%d.%m.%Y')})")
     
     # Tarayıcı gibi görünmek için Header ekle
     headers = {
@@ -50,8 +50,8 @@ def fetch(start_dt, end_dt, station="LTAN", wmo_id=None):
     }
     
     try:
-        response = requests.get(url, params=params, headers=headers, timeout=30)
-        print(f"DEBUG: Sorgu URL -> {response.url}")
+        response = requests.get(url, params=params, headers=headers, timeout=timeout, verify=False)
+        print(f"DEBUG: Sunucu Yanıt Kodu: {response.status_code} | İçerik Boyutu: {len(response.text)} byte")
         
         if response.status_code != 200:
             print(f"HATA: Ogimet sunucusu {response.status_code} kodu döndü.")
@@ -61,9 +61,17 @@ def fetch(start_dt, end_dt, station="LTAN", wmo_id=None):
         soup = BeautifulSoup(response.text, "html.parser")
         
         lines = []
-        for pre in soup.find_all("pre"):
+        pres = soup.find_all("pre")
+        
+        if not pres:
+            print("DEBUG: UYARI - HTML içinde <pre> etiketi bulunamadı (Veri yok veya format değişmiş).")
+            # Hata ayıklama için yanıtın başını yazdır
+            print(f"DEBUG: Yanıt Başlangıcı: {response.text[:200]}...")
+            
+        for pre in pres:
             lines.extend(pre.get_text().splitlines())
 
+        print(f"DEBUG: Toplam {len(lines)} satır veri çekildi.")
         data = []
         for l in lines:
             l = l.strip()
@@ -77,8 +85,8 @@ def fetch(start_dt, end_dt, station="LTAN", wmo_id=None):
                 params_synop = params.copy()
                 params_synop["lugar"] = wmo_id
                 params_synop["fmt"] = "txt"
+                r2 = requests.get(url_synop, params=params_synop, headers=headers, timeout=timeout, verify=False)
                 
-                r2 = requests.get(url_synop, params=params_synop, headers=headers, timeout=30)
                 if r2.ok:
                     for line in r2.text.splitlines():
                         line = line.strip()

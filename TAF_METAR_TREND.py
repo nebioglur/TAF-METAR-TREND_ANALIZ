@@ -8,23 +8,48 @@ class HavacilikRobotModulu:
     """
     TAF ve METAR raporlarını ayrıştıran ve ICAO kurallarına göre
     uyumluluk analizi yapan ana sınıf.
+
+    TAF/METAR ANALİZ MANTIĞI (ICAO & ANNEX 3)
+    -----------------------------------------
+    Bu modül, ICAO standartlarına ve havacılık meteorolojisi kurallarına dayanarak
+    TAF (Tahmin) ile METAR (Gerçekleşen) raporlarını karşılaştırır.
+
+    ÇALIŞMA MANTIĞI:
+    1. Tanımlamalar ve Eşik Değerler (__init__):
+       - Görüş (Visibility): 150m, 350m, 600m, 800m, 1500m, 3000m, 5000m.
+       - Tavan (Ceiling): 100, 200, 500, 1000, 1500 feet.
+       - Kritik Hadiseler: TS, FZ, FG, SN, GR vb.
+
+    2. Veri Ayrıştırma (Parsing):
+       - Rüzgar, Görüş, Bulut/Tavan ve Hadiseler metinden ayrıştırılır.
+
+    3. Karşılaştırma Mantığı (_compare_values):
+       - Rüzgar: Hız farkı >= 10 KT veya Yön farkı >= 60 derece (hız >= 10KT ise).
+       - Görüş ve Tavan: Eşik değerlerden biri geçildiyse (Örn: 5000m -> 3000m).
+       - Hadise: Kritik hadise var/yok durumu değiştiyse.
+
+    4. Ana Analiz Akışı (analiz_et):
+       a. Ana Karşılaştırma: TAF ana kısmı vs METAR.
+       b. TAF Trend Kontrolü: Uyumsuzsa, BECMG/TEMPO gruplarına bakılır.
+       c. METAR Trend Kontrolü: Hala uyumsuzsa, METAR sonundaki NOSIG/BECMG/TEMPO'ya bakılır.
+       d. Uyumsuzluk: Hiçbiri uymuyorsa "UYUMSUZ" döner.
     """
     def __init__(self):
         self.esikler_ruyet = [150, 350, 600, 800, 1500, 3000, 5000]
         self.esikler_tavan = [100, 200, 500, 1000, 1500]
         self.esikler_vv = [100, 200, 500, 1000]
-        self.kritik_hadiseler = [
-            r'(?:\b|(?<=VC))TS', 
-            r'\bFZ', 
-            r'\bSQ\b', 
-            r'\bFC\b', 
-            r'(?:\b|(?<=BC)|(?<=FZ)|(?<=MI)|(?<=PR)|(?<=VC))FG\b', 
-            r'(?:\b|(?<=VC))SS\b', 
-            r'(?:\b|(?<=VC))DS\b', 
-            r'(?:\b|(?<=SH)|(?<=TS)|(?<=FZ)|(?<=VC))(?<!-)(?<!RE)RA\b', 
-            r'(?:\b|(?<=SH)|(?<=TS)|(?<=FZ)|(?<=VC)|(?<=BL)|(?<=DR))(?<!-)(?<!RE)SN\b', 
-            r'(?:\b|(?<=SH)|(?<=TS)|(?<=VC))GR\b'
-        ]
+        self.kritik_hadiseler = {
+            'TS': r'(?:\b|(?<=VC))TS', 
+            'FZ': r'\bFZ', 
+            'SQ': r'\bSQ\b', 
+            'FC': r'\bFC\b', 
+            'FG': r'(?:\b|(?<=BC)|(?<=FZ)|(?<=MI)|(?<=PR)|(?<=VC))FG\b', 
+            'SS': r'(?:\b|(?<=VC))SS\b', 
+            'DS': r'(?:\b|(?<=VC))DS\b', 
+            'RA': r'(?:\b|(?<=SH)|(?<=TS)|(?<=FZ)|(?<=VC))(?<!-)(?<!RE)RA\b', 
+            'SN': r'(?:\b|(?<=SH)|(?<=TS)|(?<=FZ)|(?<=VC)|(?<=BL)|(?<=DR))(?<!-)(?<!RE)SN\b', 
+            'GR': r'(?:\b|(?<=SH)|(?<=TS)|(?<=VC))GR\b'
+        }
         
         print("--- KRİTİK DEĞERLEME KISTASLARI ---")
         print(f"Görüş Eşikleri (m): {self.esikler_ruyet}")
@@ -114,7 +139,7 @@ class HavacilikRobotModulu:
         except Exception:
             return False
 
-    def _is_trend_active(self, trend_header, metar_time_code, trend_type, ref_date=None):
+    def _is_trend_active(self, trend_header, metar_time_code, trend_type, ref_date=None, buffer_minutes=0):
         """Trendin (BECMG/TEMPO) belirtilen METAR saati için aktif olup olmadığını kontrol eder."""
         try:
             # Trend Header: DDHH/DDHH
@@ -171,10 +196,14 @@ class HavacilikRobotModulu:
             if not m_candidates: return True
             m_dt = min(m_candidates, key=lambda x: abs(x - t_start))
 
+            # Buffer Uygulama
+            t_start_buf = t_start - timedelta(minutes=buffer_minutes)
+            t_end_buf = t_end + timedelta(minutes=buffer_minutes)
+
             if trend_type == 'TEMPO':
-                return t_start <= m_dt <= t_end
+                return t_start_buf <= m_dt <= t_end_buf
             elif trend_type == 'BECMG':
-                return m_dt >= t_start
+                return m_dt >= t_start_buf
             
             return True
         except:
@@ -244,14 +273,15 @@ class HavacilikRobotModulu:
         if 'NSW' in code:
             return set()
             
+        # RE (Recent) kodlarını temizle (Örn: RESHRA, RERA)
+        code_clean = re.sub(r'\bRE[A-Z]+\b', '', code)
+
         found = set()
-        has_match = False
-        for pattern in self.kritik_hadiseler:
-            if re.search(pattern, code):
-                found.add(pattern)
-                has_match = True
+        for label, pattern in self.kritik_hadiseler.items():
+            if re.search(pattern, code_clean):
+                found.add(label)
         
-        return found if has_match else None
+        return found if found else None
 
     def _extract_body(self, text):
         """Rapor metnini rüzgar grubundan itibaren alır (Başlıkları ve zamanı atlar)."""
@@ -307,8 +337,9 @@ class HavacilikRobotModulu:
         # Farklılık var mı? (Sadece kritik hadiseler listesindekiler için)
         diff = set_t.symmetric_difference(set_m)
         if diff:
-            # Hangi hadiselerin değiştiğini bul (Regex patternleri yerine okunabilir kodlar döndürülebilir ama şimdilik pattern yeterli)
-            errors.append(f"Kritik hadise değişimi tespit edildi (Beklenen ile METAR farklı)")
+            t_str = ",".join(sorted(set_t)) if set_t else "Yok"
+            m_str = ",".join(sorted(set_m)) if set_m else "Yok"
+            errors.append(f"Kritik hadise değişimi: Beklenen[{t_str}] vs METAR[{m_str}]")
                 
         return errors
 
@@ -349,6 +380,9 @@ class HavacilikRobotModulu:
         taf_body = self._extract_body(taf_raw)
         metar_body = self._extract_body(metar_raw)
         
+        # TAF Ana kısmını izole et (Trendlerden arındır)
+        taf_main_part = re.split(r'\b(BECMG|TEMPO|FM\d{6})\b', taf_body)[0]
+        
         # 1. ZAMAN KONTROLÜ
         metar_time_match = re.search(r'\b\d{6}Z\b', metar_raw)
         # if metar_time_match:
@@ -375,17 +409,17 @@ class HavacilikRobotModulu:
         metar_vals = (m_wind, m_vis, m_cig, m_wx)
 
         # --- PARSE TAF ---
-        t_wind = self._parse_wind(taf_body)
+        t_wind = self._parse_wind(taf_main_part)
         if t_wind is None: 
             return 0, "VERİ BULUNAMADI", ["TAF rüzgar verisi okunamadı."]
         
-        t_vis = self._parse_visibility(taf_body)
+        t_vis = self._parse_visibility(taf_main_part)
         if t_vis is None: t_vis = 10000
         
-        t_cig = self._parse_ceiling(taf_body)
+        t_cig = self._parse_ceiling(taf_main_part)
         if t_cig is None: t_cig = (9999, False)
         
-        t_wx = self._parse_weather(taf_body)
+        t_wx = self._parse_weather(taf_main_part)
         if t_wx is None: t_wx = set() # TAF'ta hadise yoksa boş set
         
         taf_vals = (t_wind, t_vis, t_cig, t_wx)
@@ -444,6 +478,21 @@ class HavacilikRobotModulu:
             tr_errors = self._compare_values((eff_wind, eff_vis, eff_cig, eff_wx), metar_vals)
             if not tr_errors:
                 return 100, "UYUMLU (TAF Trend)", []
+
+        # 2. YAKIN ZAMANLI TREND KONTROLÜ (BUFFER - DİKKAT)
+        # Eğer ana kısım ve strict trendler uymadıysa, 60dk buffer ile kontrol et.
+        if errors:
+            for tr in taf_trends:
+                if tr['time'] and metar_time_match:
+                    # Strict kontrolde (buffer=0) zaten bakıldı, eğer orada uymadıysa veya zaman tutmadıysa buraya gelir.
+                    # Sadece zamanı tutmayanlar (erken gelenler) için buffer ile bakıyoruz.
+                    if self._is_trend_active(tr['time'], metar_time_match.group(0), tr['type'], ref_date, buffer_minutes=90):
+                        eff_wind = tr['wind'] if tr['wind'] is not None else t_wind
+                        eff_vis = tr['vis'] if tr['vis'] is not None else t_vis
+                        eff_cig = tr['cig'] if tr['cig'] is not None else t_cig
+                        eff_wx = tr['wx'] if tr['wx'] is not None else t_wx
+                        if not self._compare_values((eff_wind, eff_vis, eff_cig, eff_wx), metar_vals):
+                            return 50, "DİKKAT", errors + ["TAF Trendi ile erken uyum (Buffer)"]
 
         # Hala hata varsa, METAR Trendine bak (Aşağıdaki mevcut kod)
         if not errors:
