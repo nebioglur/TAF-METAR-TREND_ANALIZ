@@ -15,6 +15,7 @@ import io
 import plotly.express as px
 from veri_isleme import process_data
 from ayarlar import TURKEY_STATIONS
+import socket
 
 # Sayfa Ayarları
 st.set_page_config(
@@ -30,6 +31,17 @@ def get_robot():
     return TAF_METAR_TREND.HavacilikRobotModulu()
 
 robot = get_robot()
+
+def get_local_ip():
+    """Bilgisayarın yerel ağdaki IP adresini bulur."""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except:
+        return "localhost"
 
 def analyze_dataframe(df):
     """DataFrame üzerindeki METAR ve TAF'ları analiz eder."""
@@ -163,6 +175,12 @@ start_date = st.sidebar.date_input("Başlangıç", today - timedelta(days=1))
 end_date = st.sidebar.date_input("Bitiş", today)
 
 filter_opt = st.sidebar.selectbox("Filtrele", ["HEPSİ", "❌ UYUMSUZ", "⚠️ DİKKAT", "✅ UYUMLU"])
+
+# MOBİL ERİŞİM BİLGİSİ
+st.sidebar.markdown("---")
+st.sidebar.header("📱 Mobil Erişim")
+local_ip = get_local_ip()
+st.sidebar.info(f"Aynı Wi-Fi ağındaki telefonunuzdan erişmek için tarayıcıya şunu yazın:\n\n**http://{local_ip}:8501**")
 
 # Session State (Veri Kalıcılığı)
 if "analiz_sonucu" not in st.session_state:
